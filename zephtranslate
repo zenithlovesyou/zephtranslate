@@ -1,0 +1,333 @@
+#!/bin/bash
+# zephtranslate - minimal CLI translator
+
+VERSION="1.0.0"
+
+# ANSI colors as real escape bytes so printf '%s' never mis-renders them
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
+if [ -n "${NO_COLOR:-}" ]; then
+    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
+fi
+
+# Keyless Google Translate endpoints (fallback used when the first is rate limited)
+TRANSLATE_API="https://translate.googleapis.com/translate_a/single"
+FALLBACK_API="https://clients5.google.com/translate_a/t"
+CLIENT_ID="dict-chrome-ex"
+
+TARGET_LANG=""
+SOURCE_LANG="auto"
+LIST_LANGS="0"
+HAVE_TEXT=""
+TEXT_ARGS=()
+
+HAVE_JQ=""
+command -v jq >/dev/null 2>&1 && HAVE_JQ=1
+
+# Language table: code|English name|extra aliases (comma separated)
+LANGUAGES="
+auto|Auto Detect|
+af|Afrikaans|
+sq|Albanian|
+am|Amharic|
+ar|Arabic|
+hy|Armenian|
+as|Assamese|
+az|Azerbaijani|
+eu|Basque|
+be|Belarusian|
+bn|Bengali|
+bs|Bosnian|
+bg|Bulgarian|
+ca|Catalan|
+ceb|Cebuano|
+ny|Chichewa|
+zh-CN|Chinese Simplified|zh,simplified chinese,mandarin
+zh-TW|Chinese Traditional|zh-hant,traditional chinese
+co|Corsican|
+hr|Croatian|
+cs|Czech|
+da|Danish|
+nl|Dutch|
+en|English|
+eo|Esperanto|
+et|Estonian|
+tl|Filipino|tagalog
+fi|Finnish|
+fr|French|
+fy|Frisian|
+gl|Galician|
+ka|Georgian|
+de|German|deutsch
+el|Greek|
+gu|Gujarati|
+ht|Haitian Creole|
+ha|Hausa|
+haw|Hawaiian|
+iw|Hebrew|he
+hi|Hindi|
+hmng|Hmong|
+hu|Hungarian|
+is|Icelandic|
+ig|Igbo|
+id|Indonesian|
+ga|Irish|
+it|Italian|
+ja|Japanese|
+jv|Javanese|
+kn|Kannada|
+kk|Kazakh|
+km|Khmer|
+rw|Kinyarwanda|
+gom|Konkani|
+ko|Korean|
+kri|Krio|
+ku|Kurdish|
+ckb|Kurdish Sorani|
+ky|Kyrgyz|
+lo|Lao|
+la|Latin|
+lv|Latvian|
+ln|Lingala|
+lt|Lithuanian|
+lg|Luganda|
+lb|Luxembourgish|
+mk|Macedonian|
+mg|Malagasy|
+ms|Malay|
+ml|Malayalam|
+mt|Maltese|
+mi|Maori|
+mr|Marathi|
+mn|Mongolian|
+my|Myanmar|burmese
+ne|Nepali|
+no|Norwegian|nb,nynorsk
+or|Odia|oriya
+om|Oromo|
+ps|Pashto|
+fa|Persian|farsi
+pl|Polish|
+pt|Portuguese|
+pa|Punjabi|
+ro|Romanian|
+ru|Russian|
+sm|Samoan|
+sa|Sanskrit|
+gd|Scots Gaelic|
+nso|Sepedi|
+sr|Serbian|
+st|Sesotho|
+sn|Shona|
+sd|Sindhi|
+si|Sinhala|
+sk|Slovak|
+sl|Slovenian|
+so|Somali|
+es|Spanish|castellano
+su|Sundanese|
+sw|Swahili|
+sv|Swedish|
+tg|Tajik|
+ta|Tamil|
+tt|Tatar|
+te|Telugu|
+th|Thai|
+ti|Tigrinya|
+ts|Tsonga|
+tr|Turkish|turkce,türkçe
+tk|Turkmen|
+ak|Twi|
+uk|Ukrainian|
+ur|Urdu|
+ug|Uyghur|
+uz|Uzbek|
+vi|Vietnamese|
+cy|Welsh|
+xh|Xhosa|
+yi|Yiddish|ji
+yo|Yoruba|
+zu|Zulu|"
+
+die() {
+    # printf %s so escape sequences in user-supplied text never reach the terminal raw
+    printf '%s%s%s\n' "$RED" "zephtranslate: $1" "$RESET" >&2
+    exit "$2"
+}
+
+usage() {
+    echo -e "${BOLD}zephtranslate${RESET} ${DIM}v$VERSION${RESET} - minimal CLI translator"
+    echo ""
+    echo -e "${BOLD}Usage:${RESET}"
+    echo "  zephtranslate -l|--language <lang> \"<text>\""
+    echo "  echo \"<text>\" | zephtranslate -l <lang>"
+    echo ""
+    echo -e "${BOLD}Options:${RESET}"
+    echo "  -l, --language <lang>   target language (required)"
+    echo "  -s, --from <lang>       source language (default: auto)"
+    echo "      --list              list supported languages"
+    echo "  -v, --version           show version"
+    echo "  -h, --help              show this help"
+    echo ""
+    echo -e "${DIM}Languages accept ISO codes (de) or names (german). See --list.${RESET}"
+}
+
+# Resolve a language name/code to its canonical code -> LANG_CODE
+lookup_lang() {
+    local LC_ALL=C   # ${var,,} is locale-aware: tr_TR maps I -> dotless i and breaks matching
+    local needle="${1,,}" line code name aliases a
+    while IFS='|' read -r code name aliases; do
+        [ -z "$code" ] && continue
+        [ "${code,,}" = "$needle" ] && { LANG_CODE="$code"; return 0; }
+        [ "${name,,}" = "$needle" ] && { LANG_CODE="$code"; return 0; }
+        while IFS= read -r a; do
+            [ -z "$a" ] && continue
+            [ "${a,,}" = "$needle" ] && { LANG_CODE="$code"; return 0; }
+        done <<< "${aliases//,/$'\n'}"
+    done <<< "$LANGUAGES"
+    return 1
+}
+
+list_languages() {
+    echo -e "${BOLD}Supported languages:${RESET}"
+    local raw
+    raw=$(awk -F'|' 'NF>1 && $1 != "auto" {printf "%-9s %s\n", $1, $2}' <<< "$LANGUAGES" | sort -k2)
+    if command -v column >/dev/null 2>&1; then
+        column -t <<< "$raw"
+    else
+        printf '%s\n' "$raw"
+    fi
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -l|--language)
+                [ -z "$2" ] && die "--language needs a value" 1
+                TARGET_LANG="$2"; shift 2 ;;
+            -s|--from)
+                [ -z "$2" ] && die "--from needs a value" 1
+                SOURCE_LANG="$2"; shift 2 ;;
+            --list)     LIST_LANGS=1; shift ;;
+            -v|--version) echo "zephtranslate v$VERSION"; exit 0 ;;
+            -h|--help)  usage; exit 0 ;;
+            --) shift; TEXT_ARGS+=("$@"); HAVE_TEXT=1; break ;;
+            -*) die "unknown option: $1 (see --help)" 1 ;;
+            *)  TEXT_ARGS+=("$@"); HAVE_TEXT=1; break ;;
+        esac
+    done
+}
+
+payload_ok() {
+    # both endpoints must answer with a JSON array
+    case "$1" in \[*\]*) return 0 ;; *) return 1 ;; esac
+}
+
+parse_single() {
+    # Long texts come back split across segments; join them back
+    local payload="$1" out
+    if [ -n "$HAVE_JQ" ]; then
+        TRANSLATION=$(jq -r '(.[0] // []) | map(.[0] // "") | join("")' <<< "$payload")
+        DETECTED=$(jq -r '.[2] // "?"' <<< "$payload")
+    else
+        out=$(python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("".join(s[0] for s in (d[0] or [])), end="")
+print("\t" + str(d[2]) if len(d) > 2 else "\t?")
+' <<< "$payload") || die "could not parse API response" 3
+        TRANSLATION="${out%$'\t'*}"
+        DETECTED="${out##*$'\t'}"
+    fi
+}
+
+parse_fallback() {
+    local payload="$1" out
+    if [ -n "$HAVE_JQ" ]; then
+        TRANSLATION=$(jq -r '.[0][0] // ""' <<< "$payload")
+        DETECTED=$(jq -r '.[0][1] // "?"' <<< "$payload")
+    else
+        out=$(python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+first = d[0] if d else ["", "?"]
+if isinstance(first, list):
+    print(str(first[0]) + "\t" + str(first[1]))
+else:
+    print("".join(str(s[0]) for s in d) + "\t?")
+' <<< "$payload") || die "could not parse API response" 3
+        TRANSLATION="${out%$'\t'*}"
+        DETECTED="${out##*$'\t'}"
+    fi
+}
+
+translate() {
+    local payload
+    if ! payload=$(curl -fsS --max-time 20 --get "$TRANSLATE_API" \
+        --data-urlencode "client=$CLIENT_ID" \
+        --data-urlencode "sl=$SOURCE_CODE" \
+        --data-urlencode "tl=$LANG_CODE" \
+        --data-urlencode "dt=t" \
+        --data-urlencode "q=$TEXT" 2>/dev/null); then
+        payload=$(curl -fsS --max-time 20 --get "$FALLBACK_API" \
+            --data-urlencode "client=$CLIENT_ID" \
+            --data-urlencode "sl=$SOURCE_CODE" \
+            --data-urlencode "tl=$LANG_CODE" \
+            --data-urlencode "q=$TEXT" 2>/dev/null) \
+            || die "request failed - check your connection" 3
+        payload_ok "$payload" || die "unexpected API response" 3
+        parse_fallback "$payload"
+    else
+        payload_ok "$payload" || die "unexpected API response" 3
+        parse_single "$payload"
+    fi
+
+    [ -z "$TRANSLATION" ] && die "got an empty translation" 3
+}
+
+main() {
+    parse_args "$@"
+
+    if [ "$LIST_LANGS" = "1" ]; then list_languages; exit 0; fi
+
+    [ -z "$TARGET_LANG" ] && { usage >&2; echo "" >&2; die "--language is required (e.g. zephtranslate -l german \"hello\")" 1; }
+
+    SOURCE_CODE="$SOURCE_LANG"
+    if [ "$SOURCE_LANG" != "auto" ]; then
+        lookup_lang "$SOURCE_LANG" || die "unknown source language '$SOURCE_LANG' (--list shows options)" 2
+        SOURCE_CODE="$LANG_CODE"
+    fi
+    lookup_lang "$TARGET_LANG" || die "unknown target language '$TARGET_LANG' (--list shows options)" 2
+    [ "$LANG_CODE" = "auto" ] && die "'auto' cannot be the target language - pick one (--list shows options)" 1
+
+    TEXT="${TEXT_ARGS[*]:-}"
+    if [ -z "$HAVE_TEXT" ]; then
+        if [ -t 0 ]; then
+            usage >&2
+            die "no text given" 1
+        fi
+        TEXT=$(cat)
+    fi
+    [ -z "${TEXT//[[:space:]]/}" ] && die "no text given" 1
+    # the GET endpoint caps out around 5-6K chars
+    [ "${#TEXT}" -gt 5000 ] && die "text is ${#TEXT} chars - cap is ~5000, split it up" 1
+
+    translate
+
+    if [ -t 1 ]; then
+        printf '%s%s%s\n' "${BOLD}" "$TRANSLATION" "${RESET}"
+    else
+        printf '%s\n' "$TRANSLATION"
+    fi
+
+    if [ -t 1 ] && [ "$SOURCE_CODE" = "auto" ] && [ "$DETECTED" != "$LANG_CODE" ] && [ -n "$DETECTED" ]; then
+        printf '%s(from: %s)%s\n' "${DIM}" "$DETECTED" "${RESET}" >&2
+    fi
+}
+
+main "$@"
