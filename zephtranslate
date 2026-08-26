@@ -1,9 +1,6 @@
 #!/bin/bash
-# zephtranslate - minimal CLI translator
-
 VERSION="1.0.0"
 
-# ANSI colors as real escape bytes so printf '%s' never mis-renders them
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
 YELLOW=$'\033[0;33m'
@@ -155,7 +152,6 @@ yo|Yoruba|
 zu|Zulu|"
 
 die() {
-    # printf %s so escape sequences in user-supplied text never reach the terminal raw
     printf '%s%s%s\n' "$RED" "zephtranslate: $1" "$RESET" >&2
     exit "$2"
 }
@@ -177,7 +173,6 @@ usage() {
     echo -e "${DIM}Languages accept ISO codes (de) or names (german). See --list.${RESET}"
 }
 
-# Resolve a language name/code to its canonical code -> LANG_CODE
 lookup_lang() {
     local LC_ALL=C   # ${var,,} is locale-aware: tr_TR maps I -> dotless i and breaks matching
     local needle="${1,,}" line code name aliases a
@@ -229,7 +224,6 @@ payload_ok() {
 }
 
 parse_single() {
-    # Long texts come back split across segments; join them back
     local payload="$1" out
     if [ -n "$HAVE_JQ" ]; then
         TRANSLATION=$(jq -r '(.[0] // []) | map(.[0] // "") | join("")' <<< "$payload")
