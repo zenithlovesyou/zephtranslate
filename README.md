@@ -72,6 +72,7 @@ Text is capped at ~5000 characters per request - split longer texts up.
 
 ```bash
 rm ~/.local/bin/zephtranslate
+yay -R translate # when available
 ```
 
 ## License
