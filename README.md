@@ -29,7 +29,9 @@ chmod +x ~/.local/bin/zephtranslate
 # Make sure ~/.local/bin is in your PATH
 export PATH="$HOME/.local/bin:$PATH"
 ```
-
+```bash
+yay -S zephtranslate # when available
+```
 ## Usage
 
 ```bash
