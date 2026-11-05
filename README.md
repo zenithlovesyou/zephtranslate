@@ -26,7 +26,7 @@ A minimal CLI translator written in Bash. Keyless — no API key, no config. **A
 System-wide — available in every terminal, for every user, with no PATH setup: `/usr/local/bin` is on the default `PATH` of every common shell and distro (bash, zsh, fish, …):
 
 ```bash
-sudo curl -o /usr/local/bin/zephtranslate https://raw.githubusercontent.com/iamzephlol/zephtranslate/main/zephtranslate
+sudo curl -o /usr/local/bin/zephtranslate https://raw.githubusercontent.com/zenithlovesyou/zephtranslate/main/zephtranslate
 sudo chmod +x /usr/local/bin/zephtranslate
 ```
 
@@ -34,7 +34,7 @@ No sudo access? Install per-user instead:
 
 ```bash
 mkdir -p ~/.local/bin
-curl -o ~/.local/bin/zephtranslate https://raw.githubusercontent.com/iamzephlol/zephtranslate/main/zephtranslate
+curl -o ~/.local/bin/zephtranslate https://raw.githubusercontent.com/zenithlovesyou/zephtranslate/main/zephtranslate
 chmod +x ~/.local/bin/zephtranslate
 
 # Make sure ~/.local/bin is in your PATH
